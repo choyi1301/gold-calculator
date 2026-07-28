@@ -4,7 +4,7 @@
   "private": true,
   "description": "Serverless function that reads the current LBMA AM/PM gold fix from the official LBMA website using a headless browser.",
   "dependencies": {
-    "@sparticuz/chromium": "^123.0.0",
-    "puppeteer-core": "^22.0.0"
+    "@sparticuz/chromium": "131.0.1",
+    "puppeteer-core": "^23.9.0"
   }
 }
