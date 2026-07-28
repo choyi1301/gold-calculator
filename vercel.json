@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/lbma-price.js": {
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  }
+}
