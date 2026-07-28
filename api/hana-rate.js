@@ -7,7 +7,7 @@ const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
 
 const HANA_URL = 'https://www.kebhana.com/cont/mall/mall15/mall1501/index.jsp';
-const HANA_HISTORY_URL = 'https://biz.kebhana.com/foex/rate/index.do?menuItemId=wcfxd740_201i';
+const SNAPSHOT_RAW_URL = 'https://raw.githubusercontent.com/choyi1301/gold-calculator/main/data/hana-snapshots.json';
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -51,26 +51,29 @@ function extractUsdBasicRate(bodyText){
   return null;
 }
 
-// Finds every "HH:MM 시각 + 환율" pair in a daily-history-style table and
-// returns the one closest to targetHour:targetMinute.
-function findClosestTimedRate(bodyText, targetHour, targetMinute){
-  const targetTotalMin = targetHour * 60 + targetMinute;
-  const rows = [...bodyText.matchAll(/(\d{1,2}):(\d{2})[^\d]{0,40}?(\d{1,3}(?:,\d{3})*\.\d{1,2})/g)];
-  let best = null;
-  let bestDiff = Infinity;
-  for (const m of rows) {
-    const h = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const rate = parseFloat(m[3].replace(/,/g, ''));
-    if (h > 23 || min > 59 || rate < 800 || rate > 3000) continue;
-    const totalMin = h * 60 + min;
-    const diff = Math.abs(totalMin - targetTotalMin);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = { rate, matchedTime: `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`, raw: m[0] };
+function todayKST(){
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+}
+
+// Reads the saved 09:00 / 14:00 snapshot for today (or the most recent day
+// that has one, if today's hasn't been captured yet).
+async function readSnapshot(slot){
+  const res = await fetch(SNAPSHOT_RAW_URL, { cache: 'no-store' });
+  if (!res.ok) throw new Error('저장된 스냅샷 파일을 찾지 못했어요 (아직 한 번도 저장되지 않았을 수 있어요).');
+  const data = await res.json();
+
+  const today = todayKST();
+  if (data[today] && data[today][slot]) {
+    return { rate: data[today][slot].rate, date: today, stale: false };
+  }
+  // fall back to the most recent earlier date that has this slot
+  const dates = Object.keys(data).sort().reverse();
+  for (const d of dates) {
+    if (data[d] && data[d][slot]) {
+      return { rate: data[d][slot].rate, date: d, stale: true };
     }
   }
-  return best;
+  throw new Error('아직 저장된 ' + slot + ' 스냅샷이 없어요.');
 }
 
 module.exports = async (req, res) => {
@@ -78,6 +81,25 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
   const timeParam = (req.query && req.query.time) || 'now';
+
+  // '0900' or '1400': just read the stored snapshot, no browser needed at all
+  if (timeParam !== 'now') {
+    try {
+      const snap = await readSnapshot(timeParam);
+      res.status(200).json({
+        success: true,
+        rate: snap.rate,
+        matched_time: timeParam,
+        source: SNAPSHOT_RAW_URL,
+        note: snap.stale
+          ? `오늘자 저장값이 아직 없어서 ${snap.date}에 저장된 값을 대신 보여드려요.`
+          : `${snap.date} 저장된 값이에요.`,
+      });
+    } catch (err) {
+      res.status(200).json({ success: false, error: String(err && err.message ? err.message : err) });
+    }
+    return;
+  }
 
   let browser = null;
   try {
@@ -103,69 +125,25 @@ module.exports = async (req, res) => {
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36'
     );
+    await page.goto(HANA_URL, { waitUntil: 'networkidle2', timeout: 25000 });
+    await page.waitForFunction(
+      () => /USD/.test(document.body.innerText),
+      { timeout: 8000 }
+    ).catch(() => {});
+    await new Promise((r) => setTimeout(r, 2000));
+    const bodyText = await collectAllFrameText(page);
+    const found = extractUsdBasicRate(bodyText);
 
-    const result = { rate: null, raw_snippet: null, note: null, matched_time: null, mode: timeParam };
-
-    if (timeParam === 'now') {
-      await page.goto(HANA_URL, { waitUntil: 'networkidle2', timeout: 25000 });
-      await page.waitForFunction(
-        () => /USD/.test(document.body.innerText),
-        { timeout: 8000 }
-      ).catch(() => {});
-      await new Promise((r) => setTimeout(r, 2000));
-      const bodyText = await collectAllFrameText(page);
-      const found = extractUsdBasicRate(bodyText);
-
-      if (!found) {
-        res.status(200).json({
-          success: false,
-          error: 'USD 환율 텍스트를 찾지 못했어요. 페이지 구조가 바뀌었을 수 있어요.',
-          page_text_sample: bodyText.slice(0, 800),
-        });
-        return;
-      }
-      result.rate = found.rate;
-      result.raw_snippet = found.raw_snippet;
-      result.source = HANA_URL;
-    } else {
-      // '0900' or '1400': look up the historical rate closest to that time today
-      const targetHour = parseInt(timeParam.slice(0, 2), 10);
-      const targetMinute = parseInt(timeParam.slice(2, 4), 10);
-
-      await page.goto(HANA_HISTORY_URL, { waitUntil: 'networkidle2', timeout: 25000 });
-
-      // Try to trigger a search if the page needs a currency selection + submit
-      await page.evaluate(() => {
-        const selects = Array.from(document.querySelectorAll('select'));
-        for (const s of selects) {
-          const usdOpt = Array.from(s.options).find(o => /USD|미국/.test(o.textContent));
-          if (usdOpt) { s.value = usdOpt.value; s.dispatchEvent(new Event('change', { bubbles: true })); }
-        }
-        const buttons = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
-        const searchBtn = buttons.find(b => /조회/.test(b.textContent || b.value || ''));
-        if (searchBtn) searchBtn.click();
-      }).catch(() => {});
-
-      await new Promise((r) => setTimeout(r, 2500));
-      const bodyText = await collectAllFrameText(page);
-      const closest = findClosestTimedRate(bodyText, targetHour, targetMinute);
-
-      if (!closest) {
-        res.status(200).json({
-          success: false,
-          error: '시각별 환율 표를 찾지 못했어요. 페이지 구조가 바뀌었을 수 있어요.',
-          page_text_sample: bodyText.slice(0, 1000),
-        });
-        return;
-      }
-      result.rate = closest.rate;
-      result.matched_time = closest.matchedTime;
-      result.raw_snippet = closest.raw;
-      result.source = HANA_HISTORY_URL;
-      result.note = `요청 시각(${timeParam.slice(0,2)}:${timeParam.slice(2,4)})과 가장 가까운 고시 시각(${closest.matchedTime}) 값이에요.`;
+    if (!found) {
+      res.status(200).json({
+        success: false,
+        error: 'USD 환율 텍스트를 찾지 못했어요. 페이지 구조가 바뀌었을 수 있어요.',
+        page_text_sample: bodyText.slice(0, 800),
+      });
+      return;
     }
 
-    res.status(200).json({ success: true, ...result });
+    res.status(200).json({ success: true, rate: found.rate, raw_snippet: found.raw_snippet, source: HANA_URL });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err && err.message ? err.message : err) });
   } finally {
