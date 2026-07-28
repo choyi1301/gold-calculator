@@ -92,8 +92,8 @@ module.exports = async (req, res) => {
         matched_time: timeParam,
         source: SNAPSHOT_RAW_URL,
         note: snap.stale
-          ? `오늘자 저장값이 아직 없어서 ${snap.date}에 저장된 값을 대신 보여드려요.`
-          : `${snap.date} 저장된 값이에요.`,
+          ? `오늘자 값이 아직 없어서 ${snap.date} 기준 값으로 대신 보여드려요.`
+          : `${snap.date} 기준`,
       });
     } catch (err) {
       res.status(200).json({ success: false, error: String(err && err.message ? err.message : err) });
