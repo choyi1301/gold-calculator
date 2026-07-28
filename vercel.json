@@ -5,7 +5,7 @@
       "memory": 1024
     },
     "api/hana-rate.js": {
-      "maxDuration": 30,
+      "maxDuration": 45,
       "memory": 1024
     }
   }
