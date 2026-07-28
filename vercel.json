@@ -7,6 +7,14 @@
     "api/hana-rate.js": {
       "maxDuration": 45,
       "memory": 1024
+    },
+    "api/snapshot.js": {
+      "maxDuration": 30,
+      "memory": 1024
     }
-  }
+  },
+  "crons": [
+    { "path": "/api/snapshot?slot=0900", "schedule": "0 0 * * *" },
+    { "path": "/api/snapshot?slot=1400", "schedule": "0 5 * * *" }
+  ]
 }
