@@ -81,7 +81,12 @@ module.exports = async (req, res) => {
     }
 
     for (const usdIdx of usdIndices) {
-      const window = bodyText.slice(usdIdx, usdIdx + 300);
+      // Stop at the newline that ends this currency's row, so we don't
+      // accidentally read numbers from the next row (JPY/EUR/etc.)
+      let rowEnd = bodyText.indexOf('\n', usdIdx);
+      if (rowEnd === -1 || rowEnd - usdIdx > 300) rowEnd = usdIdx + 300;
+      const window = bodyText.slice(usdIdx, rowEnd);
+
       const numbers = [...window.matchAll(/(\d{1,3}(?:,\d{3})*\.\d{1,2})/g)].map((m) => parseFloat(m[1].replace(/,/g, '')));
       const plausible = numbers.filter((n) => n > 800 && n < 3000);
       if (plausible.length > 0) {
