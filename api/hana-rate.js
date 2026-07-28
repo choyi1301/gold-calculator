@@ -47,24 +47,48 @@ module.exports = async (req, res) => {
 
     await page.waitForFunction(
       () => /USD/.test(document.body.innerText),
-      { timeout: 15000 }
+      { timeout: 8000 }
     ).catch(() => {});
 
-    const bodyText = await page.evaluate(() => document.body.innerText);
+    // The rate table is often embedded in an iframe on Korean bank sites,
+    // so collect text from every frame, not just the top-level document.
+    async function collectAllFrameText(){
+      const frames = page.frames();
+      const texts = [];
+      for (const f of frames) {
+        try {
+          const t = await f.evaluate(() => document.body ? document.body.innerText : '');
+          if (t) texts.push(t);
+        } catch (e) { /* cross-origin or detached frame; skip */ }
+      }
+      return texts.join('\n---FRAME---\n');
+    }
 
-    // Find the "USD" row, then look for KRW-rate-looking numbers (roughly 900~2500 range,
-    // formatted like "1,459.50") within the next chunk of text after it.
-    const usdIdx = bodyText.indexOf('USD');
+    // give iframes a moment to finish their own loading/rendering
+    await new Promise((r) => setTimeout(r, 2000));
+    const bodyText = await collectAllFrameText();
+
+    // Find the "USD" occurrence that's actually followed by a plausible KRW rate
+    // (there may be several "USD" mentions — nav links, other tables, etc.)
     const result = { rate: null, raw_snippet: null, note: null };
+    const usdIndices = [];
+    let searchFrom = 0;
+    while (true) {
+      const idx = bodyText.indexOf('USD', searchFrom);
+      if (idx === -1) break;
+      usdIndices.push(idx);
+      searchFrom = idx + 3;
+    }
 
-    if (usdIdx >= 0) {
+    for (const usdIdx of usdIndices) {
       const window = bodyText.slice(usdIdx, usdIdx + 300);
       const numbers = [...window.matchAll(/(\d{1,3}(?:,\d{3})*\.\d{1,2})/g)].map((m) => parseFloat(m[1].replace(/,/g, '')));
       const plausible = numbers.filter((n) => n > 800 && n < 3000);
       if (plausible.length > 0) {
         result.rate = plausible[0];
+        result.raw_snippet = window.slice(0, 250);
+        break;
       }
-      result.raw_snippet = window.slice(0, 250);
     }
 
     if (!result.rate) {
