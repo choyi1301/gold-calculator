@@ -3,6 +3,10 @@
     "api/lbma-price.js": {
       "maxDuration": 30,
       "memory": 1024
+    },
+    "api/hana-rate.js": {
+      "maxDuration": 30,
+      "memory": 1024
     }
   }
 }
