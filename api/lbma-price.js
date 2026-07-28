@@ -11,13 +11,6 @@ const puppeteer = require('puppeteer-core');
 
 const LBMA_URL = 'https://www.lbma.org.uk/prices-and-data/lbma-precious-metal-prices';
 
-// Matches things like "AM $4,051.85" / "오전 4,051.85달러" / "PM  4,090.10"
-const PRICE_PATTERNS = [
-  /AM[^\d$]{0,15}\$?\s*([\d,]+\.\d{1,2})/i,
-  /PM[^\d$]{0,15}\$?\s*([\d,]+\.\d{1,2})/i,
-  /오전[^\d]{0,10}([\d,]+\.\d{1,2})/,
-  /오후[^\d]{0,10}([\d,]+\.\d{1,2})/,
-];
 // Generic fallback: any dollar-looking number on the page
 const GENERIC_PRICE = /\$?\s*([\d]{1,2},\d{3}\.\d{2})/;
 
@@ -64,40 +57,67 @@ module.exports = async (req, res) => {
     await page.waitForFunction(
       () => /\$?\s*\d{1,2},\d{3}\.\d{2}/.test(document.body.innerText),
       { timeout: 15000 }
-    ).catch(() => {}); // fall through even if this times out; we'll report what we found
+    ).catch(() => {});
 
-    const bodyText = await page.evaluate(() => document.body.innerText);
+    // The page shows only one of AM/PM at a time via a toggle tab.
+    // Click each tab in turn and read whatever price follows it.
+    async function clickTabByText(label) {
+      return page.evaluate((label) => {
+        const els = Array.from(document.querySelectorAll('button, a, div, span'));
+        const el = els.find((e) => e.children.length === 0 && e.textContent.trim() === label);
+        if (el) { el.click(); return true; }
+        return false;
+      }, label);
+    }
 
-    const result = { date: null, am: null, pm: null, raw_snippet: null, note: null };
+    function extractPriceAfterLabel(text, label) {
+      const re = new RegExp(label + '[^\\d$]{0,15}\\$?\\s*([\\d,]+\\.\\d{1,2})', 'i');
+      const m = text.match(re);
+      return m ? parseFloat(m[1].replace(/,/g, '')) : null;
+    }
 
-    const amMatch = bodyText.match(PRICE_PATTERNS[0]) || bodyText.match(PRICE_PATTERNS[2]);
-    const pmMatch = bodyText.match(PRICE_PATTERNS[1]) || bodyText.match(PRICE_PATTERNS[3]);
+    function extractDate(text) {
+      const iso = text.match(/(\d{4}-\d{2}-\d{2})/);
+      if (iso) return iso[1];
+      // date often sits right after the price with no separating whitespace
+      // (e.g. "4,091.1027/07"), so don't require a leading word boundary
+      const short = text.match(/(\d{2}\/\d{2})(?!\d)/);
+      return short ? short[1] : null;
+    }
 
-    if (amMatch) result.am = parseFloat(amMatch[1].replace(/,/g, ''));
-    if (pmMatch) result.pm = parseFloat(pmMatch[1].replace(/,/g, ''));
+    await clickTabByText('AM');
+    await new Promise((r) => setTimeout(r, 1500));
+    const amText = await page.evaluate(() => document.body.innerText);
+
+    await clickTabByText('PM');
+    await new Promise((r) => setTimeout(r, 1500));
+    const pmText = await page.evaluate(() => document.body.innerText);
+
+    const result = {
+      date: extractDate(amText) || extractDate(pmText),
+      am: extractPriceAfterLabel(amText, 'AM'),
+      pm: extractPriceAfterLabel(pmText, 'PM'),
+      raw_snippet: null,
+      note: null,
+    };
 
     if (!result.am && !result.pm) {
       // Fallback: grab the first dollar-amount-looking number on the page
-      const generic = bodyText.match(GENERIC_PRICE);
+      const generic = amText.match(GENERIC_PRICE);
       if (generic) {
         result.am = parseFloat(generic[1].replace(/,/g, ''));
-        result.note = 'AM/PM 라벨을 못 찾아 페이지의 첫 번째 금액을 사용했어요. 값을 꼭 확인하세요.';
+        result.note = 'AM/PM 탭 클릭 방식이 실패해서 페이지의 첫 번째 금액을 대신 사용했어요. 값을 꼭 확인하세요.';
       }
     }
 
-    // try to find a date like "24/07" or "2026-07-24" near the price
-    const dateMatch = bodyText.match(/\b(\d{4}-\d{2}-\d{2})\b/) || bodyText.match(/\b(\d{2}\/\d{2})\b/);
-    if (dateMatch) result.date = dateMatch[1];
-
-    // include a short snippet of raw text around any match for debugging
-    const anchor = bodyText.search(GENERIC_PRICE);
-    if (anchor >= 0) result.raw_snippet = bodyText.slice(Math.max(0, anchor - 60), anchor + 60);
+    const anchor = amText.search(GENERIC_PRICE);
+    if (anchor >= 0) result.raw_snippet = amText.slice(Math.max(0, anchor - 60), anchor + 60);
 
     if (!result.am && !result.pm) {
       res.status(200).json({
         success: false,
         error: '페이지에서 가격 형식의 텍스트를 찾지 못했어요. LBMA 페이지 구조가 바뀌었을 수 있어요.',
-        page_text_sample: bodyText.slice(0, 500),
+        page_text_sample: amText.slice(0, 500),
       });
       return;
     }
