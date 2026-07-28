@@ -1,3 +1,11 @@
+// Vercel's Node.js runtime doesn't set this env var the way AWS Lambda does,
+// but @sparticuz/chromium reads it to pick the right shared-library bundle
+// (Amazon Linux 2 vs 2023). Set a sane fallback before chromium is touched.
+if (!process.env.AWS_LAMBDA_JS_RUNTIME) {
+  process.env.AWS_LAMBDA_JS_RUNTIME = 'nodejs20.x';
+}
+
+const path = require('path');
 const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
 
@@ -25,10 +33,22 @@ module.exports = async (req, res) => {
 
   let browser = null;
   try {
+    if (typeof chromium.setGraphicsMode === 'function') {
+      chromium.setGraphicsMode(false);
+    } else {
+      chromium.setGraphicsMode = false;
+    }
+
+    const executablePath = await chromium.executablePath();
+    // Make sure the dynamic linker can find libnss3.so etc. alongside the binary
+    process.env.LD_LIBRARY_PATH = [path.dirname(executablePath), process.env.LD_LIBRARY_PATH]
+      .filter(Boolean)
+      .join(':');
+
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      executablePath,
       headless: chromium.headless,
     });
 
