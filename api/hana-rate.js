@@ -81,20 +81,20 @@ module.exports = async (req, res) => {
     }
 
     for (const usdIdx of usdIndices) {
-      // Stop at the newline that ends this currency's row, so we don't
-      // accidentally read numbers from the next row (JPY/EUR/etc.)
-      let rowEnd = bodyText.indexOf('\n', usdIdx);
-      if (rowEnd === -1 || rowEnd - usdIdx > 300) rowEnd = usdIdx + 300;
-      const window = bodyText.slice(usdIdx, rowEnd);
-
-      const numbers = [...window.matchAll(/(\d{1,3}(?:,\d{3})*\.\d{1,2})/g)].map((m) => parseFloat(m[1].replace(/,/g, '')));
+      // Take only the first 10 numbers after "USD" — that's exactly one table
+      // row's worth of columns, so this can't accidentally spill into the
+      // next currency's row even if newline detection is unreliable.
+      const window = bodyText.slice(usdIdx, usdIdx + 400);
+      const numbers = [...window.matchAll(/(\d{1,3}(?:,\d{3})*\.\d{1,2})/g)]
+        .slice(0, 10)
+        .map((m) => parseFloat(m[1].replace(/,/g, '')));
       const plausible = numbers.filter((n) => n > 800 && n < 3000);
       if (plausible.length > 0) {
         // Row order is roughly: 현찰살때, 현찰파실때, 송금보낼때, 송금받으실때, ..., 매매기준율
         // The 매매기준율 (basic/standard rate) is the LAST plausible number in the row,
         // not the first (which is the cash-buy rate inflated by the bank's spread).
         result.rate = plausible[plausible.length - 1];
-        result.raw_snippet = window.slice(0, 250);
+        result.raw_snippet = window.slice(0, 150);
         break;
       }
     }
